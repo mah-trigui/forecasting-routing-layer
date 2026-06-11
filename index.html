@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Forecasting Routing Layer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="container">
+      <h1>The Hardest Forecasting Decision Is Not Which Model to Use</h1>
+      <p class="subtitle">
+        Regime-aware forecasting with trajectory classification and routing before model selection
+      </p>
+      <div class="hero-buttons">
+        <a href="https://github.com/mah-trigui/forecasting-routing-layer" class="btn primary">View Repository</a>
+        <a href="#idea" class="btn secondary">Explore Method</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="section">
+      <div class="container">
+        <h2>Overview</h2>
+        <p>
+          This project forecasts cumulative COVID-19 deaths across roughly 180 countries using a regime-aware time series pipeline. The central design decision was not to search for a single best forecasting model across all countries, but to first determine what type of trajectory each country was exhibiting.
+        </p>
+        <p>
+          Instead of applying one uniform forecasting logic to all entities, the pipeline built a lightweight routing layer based on recent death dynamics. Countries were classified into trajectory states such as <strong>DOWN</strong>, <strong>UP</strong>, <strong>NEAR_ZERO</strong>, and <strong>REST</strong>, then routed to different forecasting strategies with different model selection rules.
+        </p>
+        <p>
+          This shifted the architecture from pure model selection to state-aware forecasting design: before asking which model is best, the pipeline first asked what kind of forecasting problem each entity currently represented.
+        </p>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <h2>Architecture</h2>
+        <img src="images/architecture.jpg" alt="Regime-aware forecasting architecture" class="architecture-image" />
+
+        <details style="margin-top: 30px;">
+          <summary style="cursor: pointer; font-weight: bold; color: #0c5adb; font-size: 1.1rem;">
+            📋 View detailed text-based architecture diagram
+          </summary>
+          <pre style="margin-top: 15px;">
+                ┌─────────────────────────────────────────────┐
+                │ Multi-Entity Time Series Input             │
+                │ country-level cumulative & daily deaths    │
+                └──────────────────────┬──────────────────────┘
+                                       │
+                                       ▼
+                ┌─────────────────────────────────────────────┐
+                │ Data Cleaning / Preprocessing              │
+                │ - negative corrections -> 0                │
+                │ - trim leading zeros                       │
+                │ - fix repeated / missing reporting         │
+                │ - smooth abnormal spikes                   │
+                └──────────────────────┬──────────────────────┘
+                                       │
+                                       ▼
+                ┌─────────────────────────────────────────────┐
+                │ Trajectory Signal Layer                    │
+                │ - elasticity from daily-death change       │
+                │ - 10-day evolution summary                 │
+                │ - 6-day recent evolution summary           │
+                └──────────────────────┬──────────────────────┘
+                                       │
+                                       ▼
+                ┌─────────────────────────────────────────────┐
+                │ Regime Detection / Routing                 │
+                │  DOWN | UP | NEAR_ZERO | REST             │
+                └───────┬──────────────┬──────────────┬──────┘
+                        │              │              │
+                        ▼              ▼              ▼
+          ┌──────────────────┐ ┌──────────────────┐ ┌────────────────────┐
+          │ DOWN Strategy    │ │ UP Strategy      │ │ NEAR_ZERO Strategy │
+          │ damped /         │ │ growth-tolerant  │ │ simple models +    │
+          │ conservative     │ │ median selection │ │ short validation   │
+          └────────┬─────────┘ └────────┬─────────┘ └─────────┬──────────┘
+                   │                    │                     │
+                   └──────────────┬─────┴──────────────┬──────┘
+                                  ▼                    ▼
+                       ┌─────────────────────────────────────┐
+                       │ REST Strategy                       │
+                       │ held-out validation across          │
+                       │ ETS / ARIMA / TBATS variants        │
+                       └────────────────┬────────────────────┘
+                                        │
+                                        ▼
+                       ┌─────────────────────────────────────┐
+                       │ Final Country Forecasts             │
+                       │ merged into submission pipeline     │
+                       └─────────────────────────────────────┘
+          </pre>
+        </details>
+      </div>
+    </section>
+
+    <section class="section" id="idea">
+      <div class="container">
+        <h2>The Core Idea</h2>
+        <p>
+          In heterogeneous forecasting systems, the main failure mode is often not the forecasting model itself, but the assumption that all entities should be handled with the same forecasting logic.
+        </p>
+        <p>
+          This project addressed that problem by inserting a routing layer before model selection. A lightweight trajectory signal was computed from recent changes in daily deaths, summarized across two windows:
+        </p>
+        <ul class="clean-list">
+          <li><strong>10-day window:</strong> medium-term trajectory behavior</li>
+          <li><strong>6-day window:</strong> more recent local regime behavior</li>
+        </ul>
+        <p>
+          Those signals were used to classify each country into a regime, and each regime was assigned a different forecasting philosophy rather than just a different model.
+        </p>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <h2>Routing Logic by Regime</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>DOWN</h3>
+            <p>
+              Countries showing deceleration were routed to conservative forecasting logic with damped ETS-style behavior and model selection biased toward lower cumulative outcomes.
+            </p>
+          </div>
+          <div class="card">
+            <h3>UP</h3>
+            <p>
+              Countries with accelerating dynamics were routed to undamped growth-tolerant logic, with median prediction selection used for robustness against overly aggressive forecasts.
+            </p>
+          </div>
+          <div class="card">
+            <h3>NEAR_ZERO</h3>
+            <p>
+              Countries with very limited signal were handled using short validation windows and simple fallback logic, avoiding overfit behavior on sparse data.
+            </p>
+          </div>
+          <div class="card">
+            <h3>REST</h3>
+            <p>
+              Ambiguous or mixed-regime countries were routed to a validation-driven model selection stage across multiple ETS, ARIMA, and TBATS variants.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <h2>Data Quality Preprocessing Before Forecasting</h2>
+        <p>
+          Because epidemiological reporting was noisy and irregular, the pipeline included explicit preprocessing before model fitting:
+        </p>
+        <ul class="clean-list">
+          <li>replace negative daily corrections with zero</li>
+          <li>remove leading zero periods before first observed deaths</li>
+          <li>repair suspicious repeated values likely caused by reporting delays</li>
+          <li>smooth abnormal local spikes using threshold-based redistribution</li>
+          <li>run some countries on multiple smoothed versions and compare outcomes</li>
+        </ul>
+        <p>
+          This preprocessing was not cosmetic. It directly affected the shape of the signal being passed into classical time series models.
+        </p>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <h2>Selected Code Snippets</h2>
+
+        <h3>1. Elasticity signal computation</h3>
+        <pre>
+jh[, elas := {
+  prev  <- shift(death_dif, 1L, fill = 0)
+  denom <- fifelse(prev == 0, prev + 1, prev)
+  (death_dif - prev) / denom
+}]
+
+jh$elas <- pmin(pmax(jh$elas, -40), 40)
+        </pre>
+
+        <h3>2. Regime classification from 6-day and 10-day summaries</h3>
+        <pre>
+countries_down <- elasticity[
+  elasticity$evol_6d <= 0 &
+  elasticity$diff_6d <= elasticity$diff_10d,
+]$region
+
+countries_up <- elasticity[
+  elasticity$diff_6d > elasticity$diff_10d &
+  elasticity$death_dif >= 10,
+]$region
+
+countries_up <- setdiff(countries_up, countries_down)
+        </pre>
+
+        <h3>3. Spike smoothing logic</h3>
+        <pre>
+smooth_abnormal_spikes <- function(df, threshold = 0.5, multiplier = 2) {
+  for (i in 3:(nrow(df) - 1)) {
+    prev_val <- df$death_dif[[i - 1]] + 1
+    curr_val <- df$death_dif[[i]]
+    next_val <- df$death_dif[[i + 1]]
+
+    ratio_prev <- curr_val / prev_val
+    ratio_next <- next_val / (curr_val + 1)
+
+    if (ratio_prev < threshold && ratio_next > multiplier) {
+      total <- curr_val + next_val
+      df$death_dif[[i]] <- round(total / 2)
+      df$death_dif[[i + 1]] <- total - df$death_dif[[i]]
+    }
+  }
+  df
+}
+        </pre>
+
+        <h3>4. Regime-specific forecast selection for DOWN countries</h3>
+        <pre>
+final_values <- sapply(valid_preds, function(x) {
+  pred_dif <- x$predicted_diff
+  sum(pmax(pred_dif, 0))
+})
+
+best_idx <- which.min(final_values)
+best_pred <- valid_preds[[best_idx]]
+        </pre>
+
+        <h3>5. Validation-based selection for ambiguous countries</h3>
+        <pre>
+mae_scores <- sapply(valid_results, function(pred) {
+  pred_cum <- convert_to_cumulative(pred$predicted_diff, df_val$nb_death[nrow(df_val)])
+  pred_cum_subset <- pred_cum[seq_len(min(length(pred_cum), nrow(df_actual)))]
+  actual_subset <- df_actual$nb_death[seq_along(pred_cum_subset)]
+  calculate_mae(actual_subset, pred_cum_subset)
+})
+
+best_model_idx <- which.min(mae_scores)
+        </pre>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <h2>Why this matters</h2>
+        <ul class="clean-list">
+          <li>separates regime detection from model fitting</li>
+          <li>avoids forcing one forecasting strategy on heterogeneous entities</li>
+          <li>makes model selection conditional on series state</li>
+          <li>improves robustness when entities live in structurally different phases</li>
+          <li>generalizes beyond epidemiology to other multi-entity forecasting systems</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <h2>Where this pattern generalizes</h2>
+        <p>
+          The same routing principle applies anywhere multiple entities evolve through different states:
+        </p>
+        <ul class="clean-list">
+          <li>demand forecasting across product lifecycle phases</li>
+          <li>churn prediction across customer maturity segments</li>
+          <li>anomaly detection across sensor operating regimes</li>
+          <li>risk forecasting across different process states</li>
+        </ul>
+        <p>
+          The reusable pattern is simple: before optimizing the learner, first identify the state of the problem being presented by each entity.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <h2>Key Takeaway</h2>
+        <div class="metric-box">
+          <p><strong>Before asking which model is best, ask what state the series is in.</strong></p>
+          <p>
+            In heterogeneous forecasting systems, the strongest design improvement may come from adding a routing layer before model selection.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <h2>Public Repository Scope</h2>
+        <p>
+          This public version shares the regime-aware forecasting architecture, selected trajectory analysis logic, preprocessing components, and project presentation. Competition data files are not included.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>Built as a public project showcase for forecasting architecture and regime-aware model routing.</p>
+    </div>
+  </footer>
+</body>
+</html>
