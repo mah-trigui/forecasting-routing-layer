@@ -175,72 +175,98 @@
 
         <h3>1. Elasticity signal computation</h3>
         <pre>
-jh[, elas := {
-  prev  <- shift(death_dif, 1L, fill = 0)
-  denom <- fifelse(prev == 0, prev + 1, prev)
-  (death_dif - prev) / denom
+series[, elasticity := {
+  prev_value  <- shift(daily_change, 1L, fill = 0)
+  denominator <- fifelse(prev_value == 0, prev_value + 1, prev_value)
+  (daily_change - prev_value) / denominator
 }]
+
+# Clip elasticity to avoid extreme outliers distorting regime classification
+series$elasticity <- pmin(pmax(series$elasticity, -40), 40)
+
 
 jh$elas <- pmin(pmax(jh$elas, -40), 40)
         </pre>
 
         <h3>2. Regime classification from 6-day and 10-day summaries</h3>
         <pre>
-countries_down <- elasticity[
-  elasticity$evol_6d <= 0 &
-  elasticity$diff_6d <= elasticity$diff_10d,
-]$region
+# DOWN regime: recent trajectory is decelerating
+entities_down <- trajectory[
+  trajectory$recent_6d_trend <= 0 &
+  trajectory$recent_6d_change <= trajectory$medium_10d_change,
+]$entity_id
 
-countries_up <- elasticity[
-  elasticity$diff_6d > elasticity$diff_10d &
-  elasticity$death_dif >= 10,
-]$region
+# UP regime: recent trajectory is accelerating above a minimum signal threshold
+entities_up <- trajectory[
+  trajectory$recent_6d_change > trajectory$medium_10d_change &
+  trajectory$daily_signal >= 10,
+]$entity_id
 
-countries_up <- setdiff(countries_up, countries_down)
+# Ensure DOWN takes priority over UP in ambiguous cases
+entities_up <- setdiff(entities_up, entities_down)
+
         </pre>
 
         <h3>3. Spike smoothing logic</h3>
         <pre>
-smooth_abnormal_spikes <- function(df, threshold = 0.5, multiplier = 2) {
-  for (i in 3:(nrow(df) - 1)) {
-    prev_val <- df$death_dif[[i - 1]] + 1
-    curr_val <- df$death_dif[[i]]
-    next_val <- df$death_dif[[i + 1]]
+# Redistribute abnormal spikes by splitting them evenly across
+# the spike day and the following day
+smooth_abnormal_spikes <- function(series_df, 
+                                   drop_threshold = 0.5, 
+                                   rebound_multiplier = 2) {
+  for (i in 3:(nrow(series_df) - 1)) {
+    previous_value <- series_df$daily_change[[i - 1]] + 1
+    current_value  <- series_df$daily_change[[i]]
+    next_value     <- series_df$daily_change[[i + 1]]
 
-    ratio_prev <- curr_val / prev_val
-    ratio_next <- next_val / (curr_val + 1)
+    # Detect spike pattern: sharp drop followed by sharp rebound
+    drop_ratio    <- current_value / previous_value
+    rebound_ratio <- next_value / (current_value + 1)
 
-    if (ratio_prev < threshold && ratio_next > multiplier) {
-      total <- curr_val + next_val
-      df$death_dif[[i]] <- round(total / 2)
-      df$death_dif[[i + 1]] <- total - df$death_dif[[i]]
+    if (drop_ratio < drop_threshold && rebound_ratio > rebound_multiplier) {
+      total_volume <- current_value + next_value
+      series_df$daily_change[[i]]     <- round(total_volume / 2)
+      series_df$daily_change[[i + 1]] <- total_volume - series_df$daily_change[[i]]
     }
   }
-  df
+  series_df
 }
+
         </pre>
 
         <h3>4. Regime-specific forecast selection for DOWN countries</h3>
         <pre>
-final_values <- sapply(valid_preds, function(x) {
-  pred_dif <- x$predicted_diff
-  sum(pmax(pred_dif, 0))
+# For decelerating entities, select the model that produces
+# the most conservative cumulative forecast
+cumulative_totals <- sapply(candidate_forecasts, function(forecast) {
+  daily_predictions <- forecast$predicted_daily_change
+  sum(pmax(daily_predictions, 0))
 })
 
-best_idx <- which.min(final_values)
-best_pred <- valid_preds[[best_idx]]
+# Pick the model with the lowest projected cumulative outcome
+best_model_index   <- which.min(cumulative_totals)
+selected_forecast  <- candidate_forecasts[[best_model_index]]
+
         </pre>
 
         <h3>5. Validation-based selection for ambiguous countries</h3>
         <pre>
-mae_scores <- sapply(valid_results, function(pred) {
-  pred_cum <- convert_to_cumulative(pred$predicted_diff, df_val$nb_death[nrow(df_val)])
-  pred_cum_subset <- pred_cum[seq_len(min(length(pred_cum), nrow(df_actual)))]
-  actual_subset <- df_actual$nb_death[seq_along(pred_cum_subset)]
-  calculate_mae(actual_subset, pred_cum_subset)
+# For ambiguous entities, select the model with the lowest
+# held-out MAE on the validation window
+validation_errors <- sapply(candidate_results, function(forecast) {
+  predicted_cumulative <- convert_to_cumulative(
+    forecast$predicted_daily_change,
+    validation_series$cumulative_value[nrow(validation_series)]
+  )
+  predicted_aligned <- predicted_cumulative[
+    seq_len(min(length(predicted_cumulative), nrow(holdout_actuals)))
+  ]
+  actual_aligned <- holdout_actuals$cumulative_value[seq_along(predicted_aligned)]
+  calculate_mae(actual_aligned, predicted_aligned)
 })
 
-best_model_idx <- which.min(mae_scores)
+best_model_index <- which.min(validation_errors)
+
         </pre>
       </div>
     </section>
